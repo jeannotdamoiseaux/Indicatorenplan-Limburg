@@ -354,10 +354,32 @@ def laad_data_invoerapplicatie(bron_bestand):
     df['geolevel'] = 'prov_id'  # Altijd 'prov_id' volgens de vereiste structuur
     df['geoitem'] = 'pv31'     # Altijd 'pv31'
 
+    # Hernoem "Datum van invoer" naar "period" (indien aanwezig)
+    if "Datum van invoer" in df.columns:
+        df.rename(columns={'Datum van invoer': 'period'}, inplace=True)
+    
+    # Gebruik "Peildatum (indien afwijkend van datum van invoer)" indien waarde aanwezig is
+    if "Peildatum (indien afwijkend van datum van invoer)" in df.columns:
+        df['period'] = df.apply(
+            lambda row: row['Peildatum (indien afwijkend van datum van invoer)'] 
+            if pd.notnull(row['Peildatum (indien afwijkend van datum van invoer)']) 
+            else row['period'], 
+            axis=1
+        )
+    
+    # Controleer op missende of ongeldige datums (NaT-waarden)
+    try:
+        df['period'] = pd.to_datetime(df['period'], format='%d-%m-%Y', errors='coerce')
+    except Exception as e:
+        raise RuntimeError(f"Er is een fout opgetreden bij het verwerken van de dates in de 'period'-kolom: {e}")
+
+    # Zet de 'period' kolom om naar het gewenste formaat 'm1y1999'
+    df['period'] = df['period'].apply(lambda x: f"m{x.month}y{x.year}" if not pd.isna(x) else None)
+
     # ---- Data omvormen naar gewenste structuur ----
     # Pivot de dataframe zodat Indicator_nr de kolomnamen worden en Invoerveld de waarden
     df_pivot = df.pivot_table(
-        index=['geolevel', 'geoitem'],  # Bepaalde vaste kolommen blijven als index
+        index=['geolevel', 'geoitem', 'period'],  # Bepaalde vaste kolommen blijven als index
         columns='Indicator_nr',        # Indicator-nummers worden kolomnamen
         values='Invoerveld',           # Waardes komen vanuit de Invoerveld-kolom
         aggfunc='first'                # Neem eerste waarde als er duplicaten zijn
