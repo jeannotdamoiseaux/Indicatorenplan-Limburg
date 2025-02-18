@@ -103,11 +103,14 @@ def transformeer_woonderzoek_nederland(df, n_rows, vermenigvuldig_met_100=True):
 def transformeer_woonderzoek_data(df, region_mapping, column_renames=None):
     """
     Transformeert het gecombineerde woonderzoek DataFrame.
-
     Deze functie voert de volgende stappen uit:
-    1. Voegt een 'geolevel' kolom toe
-    2. Mapt de regio's naar hun respectievelijke codes
-    3. Hernoemt de kolommen volgens de gespecificeerde mapping
+    1. Voegt een 'geolevel' kolom toe.
+    2. Mapt de regio's naar hun respectievelijke codes.
+    3. Hernoemt de kolommen volgens de gespecificeerde mapping.
+    4. Hernoemt 'Regio' naar 'geoitem'.
+    5. Hernoemt 'Jaartal' naar 'period' (optioneel).
+    6. Voorziet dimensie-item-kolommen (dim_*) van gestandaardiseerde waarden in lowercase
+       zonder spaties.
 
     Args:
         df (pd.DataFrame): Gecombineerd DataFrame van Limburg en Nederland woonderzoek
@@ -133,6 +136,11 @@ def transformeer_woonderzoek_data(df, region_mapping, column_renames=None):
     # Stap 5: Hernoem de overige kolommen (optioneel)
     if column_renames:
         df = df.rename(columns=column_renames)
+
+    # Stap 6: Hernoem dimensie-items naar lowercase en verwijder spaties
+    for col in df.columns:
+        if col.startswith('dim_'):
+            df[col] = df[col].apply(lambda x: str(x).lower().replace(" ", "_").replace(",", "") if isinstance(x, str) else x)
 
     return df
 
