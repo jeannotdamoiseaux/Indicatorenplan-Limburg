@@ -1,52 +1,92 @@
 import pandas as pd
 from helpers import (
-    drop_empty_rows,
-    create_column_mapping,
-    extract_regios_and_jaartallen,
-    process_data,
     corrigeer_bu_codes,
     filter_limburgse_buurten,
     map_bu_code_naar_corop_code
 )
 import warnings
 
-def transformeer_woonderzoek_limburg(df, n_rows, vermenigvuldig_met_100=True):
+def transformeer_woononderzoek_nederland(df, geolevel):
     """
-    Transformeert een DataFrame van woningonderzoek naar een gestructureerd formaat.
-    Deze functie voert de volgende stappen uit:
-    1. Verwijdert lege rijen
-    2. Hernoemt kolommen op basis van de eerste rij
-    3. Extraheert unieke regio's en jaartallen
-    4. Verwerkt de data in een nieuw formaat met 'Regio', 'Jaartal', 'Categorie' en 'Waarde'
-    5. Vermenigvuldigt optioneel de 'Waarde' kolom met 100 om percentages om te zetten naar hele getallen
-
+    Verwerkt het woononderzoek DataFrame en transformeert het naar het gewenste formaat.
+    
     Args:
-        df (pd.DataFrame): Origineel DataFrame ingeladen vanuit het Excel-bestand.
-        n_rows (int): Aantal rijen dat relevante informatie bevat.
-        vermenigvuldig_met_100 (bool, optional): Indien True, vermenigvuldigt de 'Waarde' kolom met 100. Standaard is True.
-
+    - df (pd.DataFrame): Het originele woononderzoek DataFrame.
+    - geolevel (str): Niveau van de geografische indeling (bv. 'corop_id').
+    
     Returns:
-        pd.DataFrame: Getransformeerd DataFrame met kolommen 'Regio', 'Jaartal', 'Categorie' en 'Waarde'.
+    - pd.DataFrame: Het getransformeerde, opgeschoonde DataFrame.
     """
-    # Stap 1: Verwijder lege rijen
-    df = drop_empty_rows(df)
+    # Veiligheid: kopie van het dataframe maken
+    df_transformed = df.copy()
     
-    # Stap 2: Hernoem kolommen
-    header_row = df.iloc[0]  # Gebruik de eerste rij als header
-    new_column_names = create_column_mapping(header_row)
-    df.columns = ["Regio"] + list(reversed(new_column_names))[1:]
+    # Reset de index, hernoem 'Provincies' naar 'geoitem'
+    if geolevel == 'nederland':
+        df_transformed = df_transformed.reset_index(drop=True).rename(columns={geolevel.title(): "geoitem"})
+    else:
+        df_transformed = df_transformed.reset_index(drop=True).rename(columns={"Provincies": "geoitem"})
+
+    # Stap 1: Gebruik `.melt()` om de kolomwaarden te transformeren naar rijen
+    df_melted = df_transformed.melt(id_vars=["geoitem"], var_name="categorien", value_name="MO_11b")
+
+    # Stap 2: Splits de kolomnamen (in het veld 'categorien') op '|' in meerdere dimensies
+    categorien_split = df_melted["categorien"].str.split(r"\|", expand=True)
+
+    # Controle: Alleen doorgaan met kolommen als ze correct opgesplitst worden
+    if categorien_split.shape[1] < 4:
+        raise ValueError("Niet alle kolommen hebben het verwachte format met '|'. Controleer de brondata.")
     
-    # Stap 3: Extraheer unieke regio's en jaartallen
-    regios, jaartallen = extract_regios_and_jaartallen(df, n_rows)
-    
-    # Stap 4: Verwerk de data in het nieuwe formaat
-    result_df = process_data(df, regios, jaartallen)
-    
-    # Stap 5: Vermenigvuldig optioneel de 'Waarde' kolom met 100
-    if vermenigvuldig_met_100:
-        result_df['Waarde'] = result_df['Waarde'] * 100
-    
-    return result_df
+    # Zet correcte kolomnamen
+    categorien_split.columns = ["nvt", "period", "dim_eigendom_1", "dim_tevredenheid_0"]
+
+    # Stap 3: Voeg de gesplitste kolommen toe aan de DataFrame
+    df_melted = pd.concat([df_melted, categorien_split], axis=1)
+
+    # Stap 4: Opschonen - verwijder de onnodige kolommen
+    df_melted = df_melted.drop(columns=["categorien", "nvt"])
+
+    # Stap 5: Verwijder lege of niet-relevante rijen
+    df_melted = df_melted.dropna(subset=["period", "dim_eigendom_1", "dim_tevredenheid_0"])
+
+    # Stap 6: Zorg dat alleen relevante kolommen en waarden overblijven
+    df_melted = df_melted[df_melted["MO_11b"] != "-"]
+
+    # Stap 7: Converteer 'MO_11b' naar numerieke waarden (voor consistentie)
+    # Vervang foutieve of niet-converteerbare waarden door 0
+    df_melted["MO_11b"] = pd.to_numeric(df_melted["MO_11b"], errors="coerce").fillna(0).astype(int)
+
+    # Stap 8: Map de waarden van 'dim_eigendom_1' naar de opgegeven codes
+    eigendom_mapping = {
+        'Eigenaar-bewoner': '2',
+        'Private huur': '12',
+        'Corporatiehuur': '11'
+    }
+    df_melted["dim_eigendom_1"] = df_melted["dim_eigendom_1"].map(eigendom_mapping)
+
+    # Stap 9: Transformeer 'dim_tevredenheid_0' door deze kleinere letters te maken, spaties te vervangen en komma's te verwijderen
+    df_melted["dim_tevredenheid_0"] = (
+        df_melted["dim_tevredenheid_0"]
+        .str.lower()
+        .str.replace(" ", "_")
+        .str.replace(",", "")
+    )
+
+    # Stap 10: Herdefinieer de 'geoitem'-code via mapping voor COROP-gebieden
+    if geolevel == 'nederland':
+        geoitem_mapping = {'Nederland': 'nl00'}
+    else:
+        geoitem_mapping = {
+            "Limburg: Noord-Limburg": "cr37",
+            "Limburg: Midden-Limburg": "cr38",
+            "Limburg: Zuid-Limburg": "cr39"
+        }
+    # Pas de mapping toe
+    df_melted['geoitem'] = df_melted['geoitem'].map(geoitem_mapping)
+
+    # Stap 11: Voeg geolevel-kolom toe
+    df_melted['geolevel'] = geolevel
+
+    return df_melted
 
 def transformeer_woonderzoek_nederland(df, n_rows, vermenigvuldig_met_100=True):
     """
@@ -311,6 +351,8 @@ def laad_woningtekort_data(regio_mapping):
     # Transformeer de data
     df_mo_11a = transformeer_woonderzoek_data(df, regio_mapping)
 
+    df_mo_11a = df_mo_11a.rename(columns={'aantal': 'df_mo_11a'})
+
     return df_mo_11a
 
 def laad_data_invoerapplicatie(bron_bestand):
@@ -391,3 +433,43 @@ def laad_data_invoerapplicatie(bron_bestand):
 
     # Return de ingelezen DataFrame
     return df_pivot
+
+# Functie om CBS data verder te transformeren
+def transformeer_cbs_data(df, geolevel):
+    """
+    Transformeert de CBS data door filters toe te passen,
+    berekeningen uit te voeren, en de dataset te herstructureren.
+
+    Parameters:
+    -----------
+    df (pd.DataFrame): De originele dataset met CBS data.
+
+    Returns:
+    --------
+    df (pd.DataFrame): De getransformeerde dataset.
+    """
+    # Selecteer alleen de relevante kolommen
+    if not all(col in df.columns for col in ['RegioS', 'Perioden', 'TotaleBevolking_1', 'TotaleOppervlakte_243']):
+        raise KeyError("Een of meer vereiste kolommen ontbreken in de dataset.")
+
+    df = df[['RegioS', 'Perioden', 'TotaleBevolking_1', 'TotaleOppervlakte_243']].copy()
+
+    # Bereken 'mo_12d' (bevolking per oppervlakte * 1000)
+    df['mo_12d'] = df['TotaleOppervlakte_243'] / df['TotaleBevolking_1'] * 1000
+
+    # Verwijder de nu overbodige kolommen
+    df = df.drop(['TotaleOppervlakte_243', 'TotaleBevolking_1'], axis=1)
+
+    # Verwijder rijen met missende waarden (indien aanwezig)
+    df = df.dropna()
+
+    # Hernoem kolommen voor leesbaarheid
+    df = df.rename(columns={
+        'RegioS': 'geoitem',
+        'Perioden': 'period'
+    })
+
+    # Voeg een nieuwe kolom toe voor geolevel ('cr' voor COROP-regio's)
+    df['geolevel'] = df['geoitem'].apply(lambda x: 'nederland' if x == 'nl00' else geolevel)
+
+    return df
