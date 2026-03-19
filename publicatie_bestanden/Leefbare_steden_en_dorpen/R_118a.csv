@@ -1,2 +1,4 @@
-geoitem,geolevel,period,R_118a
-pv31,prov_id,m1y2025,2
+geoitem;geolevel;period;R_118a
+pv31;prov_id;m1y2025;2
+pv31;prov_id;m6y2025;28
+pv31;prov_id;m2y2026;61

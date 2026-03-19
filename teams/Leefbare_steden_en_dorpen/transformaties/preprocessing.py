@@ -2,9 +2,11 @@ import pandas as pd
 from helpers import (
     corrigeer_bu_codes,
     filter_limburgse_buurten,
-    map_bu_code_naar_corop_code
+    map_bu_code_naar_corop_code,
+    laad_en_verwerk_enkel_invoerbestand
 )
-import warnings
+from typing import List, Union
+import re
 
 def transformeer_woononderzoek_nederland(df, geolevel):
     """
@@ -31,13 +33,9 @@ def transformeer_woononderzoek_nederland(df, geolevel):
 
     # Stap 2: Splits de kolomnamen (in het veld 'categorien') op '|' in meerdere dimensies
     categorien_split = df_melted["categorien"].str.split(r"\|", expand=True)
-
-    # Controle: Alleen doorgaan met kolommen als ze correct opgesplitst worden
-    if categorien_split.shape[1] < 4:
-        raise ValueError("Niet alle kolommen hebben het verwachte format met '|'. Controleer de brondata.")
     
     # Zet correcte kolomnamen
-    categorien_split.columns = ["nvt", "period", "dim_eigendom_1", "dim_tevredenheid_0"]
+    categorien_split.columns = ["nvt", "dim_tevredenheid_1", "period"]
 
     # Stap 3: Voeg de gesplitste kolommen toe aan de DataFrame
     df_melted = pd.concat([df_melted, categorien_split], axis=1)
@@ -46,7 +44,7 @@ def transformeer_woononderzoek_nederland(df, geolevel):
     df_melted = df_melted.drop(columns=["categorien", "nvt"])
 
     # Stap 5: Verwijder lege of niet-relevante rijen
-    df_melted = df_melted.dropna(subset=["period", "dim_eigendom_1", "dim_tevredenheid_0"])
+    df_melted = df_melted.dropna(subset=["period", "dim_tevredenheid_1"])
 
     # Stap 6: Zorg dat alleen relevante kolommen en waarden overblijven
     df_melted = df_melted[df_melted["MO_11b"] != "-"]
@@ -55,17 +53,17 @@ def transformeer_woononderzoek_nederland(df, geolevel):
     # Vervang foutieve of niet-converteerbare waarden door 0
     df_melted["MO_11b"] = pd.to_numeric(df_melted["MO_11b"], errors="coerce").fillna(0).astype(int)
 
-    # Stap 8: Map de waarden van 'dim_eigendom_1' naar de opgegeven codes
-    eigendom_mapping = {
-        'Eigenaar-bewoner': '2',
-        'Private huur': '12',
-        'Corporatiehuur': '11'
-    }
-    df_melted["dim_eigendom_1"] = df_melted["dim_eigendom_1"].map(eigendom_mapping)
+    # # Stap 8: Map de waarden van 'dim_eigendom_1' naar de opgegeven codes
+    # eigendom_mapping = {
+    #     'Eigenaar-bewoner': '2',
+    #     'Private huur': '12',
+    #     'Corporatiehuur': '11'
+    # }
+    # df_melted["dim_eigendom_1"] = df_melted["dim_eigendom_1"].map(eigendom_mapping)
 
-    # Stap 9: Transformeer 'dim_tevredenheid_0' door deze kleinere letters te maken, spaties te vervangen en komma's te verwijderen
-    df_melted["dim_tevredenheid_0"] = (
-        df_melted["dim_tevredenheid_0"]
+    # Stap 9: Transformeer 'dim_tevredenheid_1' door deze kleinere letters te maken, spaties te vervangen en komma's te verwijderen
+    df_melted["dim_tevredenheid_1"] = (
+        df_melted["dim_tevredenheid_1"]
         .str.lower()
         .str.replace(" ", "_")
         .str.replace(",", "")
@@ -76,9 +74,7 @@ def transformeer_woononderzoek_nederland(df, geolevel):
         geoitem_mapping = {'Nederland': 'nl00'}
     else:
         geoitem_mapping = {
-            "Limburg: Noord-Limburg": "cr37",
-            "Limburg: Midden-Limburg": "cr38",
-            "Limburg: Zuid-Limburg": "cr39"
+            "Limburg": "pv31"
         }
     # Pas de mapping toe
     df_melted['geoitem'] = df_melted['geoitem'].map(geoitem_mapping)
@@ -258,6 +254,14 @@ def transformeer_leefbarometer_data(
     return gegroepeerde_data_limburg
 
 def laad_woningtekort_data(regio_mapping):
+    # 2025
+    df_2025 = pd.read_excel('../../../data/Woningtekort/Woningtekort - 2025 - COROP-gebieden.xlsx', skiprows=1)
+    df_2025 = df_2025.iloc[:3, :]
+    df_2025.columns = ['Regio', 'aantal']
+    df_2025['period'] = '2025'
+    df_2025['aantal'] = df_2025['aantal'].replace("%", "")
+    df_2025['aantal'] =  df_2025['aantal'].astype(float).abs() * 100
+
     # 2024
     df_2024 = pd.read_excel('../../../data/Woningtekort/Woningtekort - 2024 - COROP-gebieden.xlsx', skiprows=1)
     df_2024 = df_2024.iloc[:3, :]
@@ -337,6 +341,7 @@ def laad_woningtekort_data(regio_mapping):
         2022: 3.9, # https://www.rijksoverheid.nl/actueel/nieuws/2023/07/12/woningbouwopgave-stijgt-naar-981.000-tot-en-met-2030 
         2023: 4.8, # https://www.rijksoverheid.nl/actueel/nieuws/2023/07/12/woningbouwopgave-stijgt-naar-981.000-tot-en-met-2030
         2024: 4.9, # https://www.rijksoverheid.nl/actueel/nieuws/2024/07/12/seinen-op-groen-om-jaarlijks-100.000-nieuwe-woningen-te-bouwen
+        2025: 4.8, # https://abfresearch.nl/publicaties/primos-prognose-2025/
     }
 
     # Voeg Nederland-waarden dynamisch toe aan een DataFrame
@@ -345,97 +350,46 @@ def laad_woningtekort_data(regio_mapping):
     )
 
     # Combine the datasets into a single DataFrame
-    df = pd.concat([df_2019, df_2021, df_2022, df_2023, df_2024, df_nederland], ignore_index=True)
+    df = pd.concat([df_2019, df_2021, df_2022, df_2023, df_2024, df_2025, df_nederland], ignore_index=True)
     df['period'] = pd.to_numeric(df['period'], errors='coerce').astype('Int64')
 
     # Transformeer de data
     df_mo_11a = transformeer_woonderzoek_data(df, regio_mapping)
 
-    df_mo_11a = df_mo_11a.rename(columns={'aantal': 'df_mo_11a'})
+    df_mo_11a = df_mo_11a.rename(columns={'aantal': 'mo_11a'})
 
     return df_mo_11a
 
-def laad_data_invoerapplicatie(bron_bestand):
+def laad_data_invoerapplicatie(bron_bestanden: Union[str, List[str]]) -> pd.DataFrame:
     """
-    Laadt een dataset vanuit een bestand (CSV of Excel).
+    Laadt en verwerkt één of meerdere bronbestanden, combineert resultaten in één DataFrame.
     
     Parameters:
-        bron_bestand (str): Pad naar het bestand (.csv, .xlsx, of .xls).
-        
+        bron_bestanden (str of list van str): Eén of meerdere paden naar bestanden.
+    
     Returns:
-        pd.DataFrame: De ingelezen DataFrame.
-        
-    Raises:
-        ValueError: Als het bestandstype niet wordt ondersteund.
-        FileNotFoundError: Als het bestand niet bestaat.
+        pd.DataFrame: Gecombineerde resultaten.
     """
-    # Bestand inlezen afhankelijk van extensie
-    try:
-        if bron_bestand.endswith(".csv"):
-            df = pd.read_csv(bron_bestand)
-        elif bron_bestand.endswith(".xlsx") or bron_bestand.endswith(".xls"):
-            df = pd.read_excel(bron_bestand)
-        else:
-            raise ValueError(f"Bestandstype niet ondersteund: {bron_bestand}")
-    except FileNotFoundError:
-        raise FileNotFoundError(f"Het bestand '{bron_bestand}' is niet gevonden. Controleer het pad en bestand.")
-    except Exception as e:
-        raise RuntimeError(f"Er is een fout opgetreden tijdens het inlezen van het bestand: {e}")
+    # Sta toe dat er een string mee wordt gegeven
+    if isinstance(bron_bestanden, str):
+        bron_bestanden = [bron_bestanden]
 
-    # Check op aanwezigheid van "Operationeel databewaker"
-    if "Operationeel databewaker" in df.columns:
-        # Waarschuwing voor de gebruiker
-        warnings.warn(
-            "De kolom 'Operationeel databewaker' is nog aanwezig in het bestand. "
-            "Verwijder deze kolom voordat je publiceert naar GitHub!",
-            UserWarning
-        )
-        # Automatisch de kolom verwijderen (optioneel, afhankelijk van je behoefte)
-        df = df.drop(columns=["Operationeel databewaker"])
-    
-    df['geolevel'] = 'prov_id'  # Altijd 'prov_id' volgens de vereiste structuur
-    df['geoitem'] = 'pv31'     # Altijd 'pv31'
+    # Verwerk alle bestanden en voeg samen
+    alle_df = []
+    for bestand in bron_bestanden:
+        df = laad_en_verwerk_enkel_invoerbestand(bestand)
+        alle_df.append(df)
 
-    # Hernoem "Datum van invoer" naar "period" (indien aanwezig)
-    if "Datum van invoer" in df.columns:
-        df.rename(columns={'Datum van invoer': 'period'}, inplace=True)
-    
-    # Gebruik "Peildatum (indien afwijkend van datum van invoer)" indien waarde aanwezig is
-    if "Peildatum (indien afwijkend van datum van invoer)" in df.columns:
-        df['period'] = df.apply(
-            lambda row: row['Peildatum (indien afwijkend van datum van invoer)'] 
-            if pd.notnull(row['Peildatum (indien afwijkend van datum van invoer)']) 
-            else row['period'], 
-            axis=1
-        )
-    
-    # Controleer op missende of ongeldige datums (NaT-waarden)
-    try:
-        df['period'] = pd.to_datetime(df['period'], format='%d-%m-%Y', errors='coerce')
-    except Exception as e:
-        raise RuntimeError(f"Er is een fout opgetreden bij het verwerken van de dates in de 'period'-kolom: {e}")
+    # Combineer alles tot één DataFrame
+    if alle_df:
+        resultaat = pd.concat(alle_df, ignore_index=True)
+    else:
+        resultaat = pd.DataFrame()
 
-    # Zet de 'period' kolom om naar het gewenste formaat 'm1y1999'
-    df['period'] = df['period'].apply(lambda x: f"m{x.month}y{x.year}" if not pd.isna(x) else None)
-
-    # ---- Data omvormen naar gewenste structuur ----
-    # Pivot de dataframe zodat Indicator_nr de kolomnamen worden en Invoerveld de waarden
-    df_pivot = df.pivot_table(
-        index=['geolevel', 'geoitem', 'period'],  # Bepaalde vaste kolommen blijven als index
-        columns='Indicator_nr',        # Indicator-nummers worden kolomnamen
-        values='Invoerveld',           # Waardes komen vanuit de Invoerveld-kolom
-        aggfunc='first'                # Neem eerste waarde als er duplicaten zijn
-    ).reset_index()
-
-    # ---- Optioneel: Kolomnamen netjes maken ----
-    df_pivot.columns.name = None  # Verwijder MultiIndex-niveau naamgeving (Indicator_nr)
-    df_pivot = df_pivot.rename_axis(None, axis=1)  # Zorg dat de DataFrame geen as-namen heeft
-
-    # Return de ingelezen DataFrame
-    return df_pivot
+    return resultaat
 
 # Functie om CBS data verder te transformeren
-def transformeer_cbs_data(df, geolevel):
+def transformeer_cbs_data(df, geolevel, hele_jaren=False):
     """
     Transformeert de CBS data door filters toe te passen,
     berekeningen uit te voeren, en de dataset te herstructureren.
@@ -443,22 +397,38 @@ def transformeer_cbs_data(df, geolevel):
     Parameters:
     -----------
     df (pd.DataFrame): De originele dataset met CBS data.
+    geolevel (str): Geografisch niveau (bijv. 'corop_id').
+    hele_jaren (bool): Indien True, filter op hele jaren (standaard False).
 
     Returns:
     --------
     df (pd.DataFrame): De getransformeerde dataset.
     """
     # Selecteer alleen de relevante kolommen
-    if not all(col in df.columns for col in ['RegioS', 'Perioden', 'TotaleBevolking_1', 'TotaleOppervlakte_243']):
+    vereiste_kolommen = ['RegioS', 'Perioden', 'BevolkingAanHetEindeVanDePeriode_15']
+    if not all(col in df.columns for col in vereiste_kolommen):
         raise KeyError("Een of meer vereiste kolommen ontbreken in de dataset.")
+    df = df[vereiste_kolommen].copy()
 
-    df = df[['RegioS', 'Perioden', 'TotaleBevolking_1', 'TotaleOppervlakte_243']].copy()
+    # FILTER: Alleen hele jaren als hele_jaren==True
+    if hele_jaren:
+        # Voorbeelden hele jaren: '2023', '2024JJ00'
+        jaar_regex = re.compile(r"^(?:\d{4}JJ00|\d{4})$")
+        df = df[df['Perioden'].astype(str).str.match(jaar_regex)]
 
-    # Bereken 'mo_12d' (bevolking per oppervlakte * 1000)
-    df['mo_12d'] = df['TotaleOppervlakte_243'] / df['TotaleBevolking_1'] * 1000
+    # Oppervlakte blijft stabiel, dus we kunnen deze gebruiken om de bevolkingsdichtheid te berekenen
+    # Bron: 70072NED (2025JJ00)
+    regio_oppervlakte_mapping = {
+        'nl00': 41543.37,  # Nederland
+        'cr37': 854.14,   # Noord-Limburg
+        'cr38': 694.8,   # Midden-Limburg
+        'cr39': 660.91    # Zuid-Limburg
+    }
+
+    df['mo_12d'] = df.apply(lambda row: (regio_oppervlakte_mapping.get(row['RegioS']) / row['BevolkingAanHetEindeVanDePeriode_15']) * 1000, axis=1)
 
     # Verwijder de nu overbodige kolommen
-    df = df.drop(['TotaleOppervlakte_243', 'TotaleBevolking_1'], axis=1)
+    df = df.drop(['BevolkingAanHetEindeVanDePeriode_15'], axis=1)
 
     # Verwijder rijen met missende waarden (indien aanwezig)
     df = df.dropna()
@@ -473,3 +443,106 @@ def transformeer_cbs_data(df, geolevel):
     df['geolevel'] = df['geoitem'].apply(lambda x: 'nederland' if x == 'nl00' else geolevel)
 
     return df
+
+
+
+
+def transformeer_planrealisaties_juno(brond_bestand: pd.DataFrame, year: int, regio_mapping: dict) -> pd.DataFrame:
+    """
+    Transformeert planrealisaties data specifiek voor het Juno-bestand.
+
+    Parameters:
+    -----------
+    brond_bestand (pd.DataFrame): DataFrame met de ruwe data van het Juno-bestand.
+    year (int): Het jaar van de data.
+    regio_mapping (dict): Mapping van COROP-namen naar geoitems.
+
+    Returns:
+    --------
+    pd.DataFrame: Getransformeerde planrealisaties data.
+    """
+    # Inlezen van het Juno-bestand en selecteren van relevante kolommen
+    df = pd.read_excel(brond_bestand)
+    df = df[['Gemeente', 'COROP', 'Soort', 'Aantal toevoegingen', 'Aantal onttrekkingen', 'Huur/Koop', 'Prijsklasse', 'Woningtype', 'In-/uitbreidingslocatie']]
+
+    # Toevoegen van geolevel en geoitem op basis van COROP-code
+    df['geolevel'] = 'corop_code'
+    df = df['COROP'].map(regio_mapping).to_frame('geoitem').join(df.drop(columns=['COROP']))
+    df['period'] = year
+
+    # Bepalen van d_40a (bruto toevoegingen) en d_40b (netto toevoegingen)
+    df_d_40a = df.groupby(['geoitem', 'geolevel', 'period'])['Aantal toevoegingen'].sum().reset_index()
+    df_d_40a = df_d_40a.rename(columns={'Aantal toevoegingen': 'd_40a'})
+
+    # Netto toevoegingen berekenen als bruto toevoegingen minus onttrekkingen
+    df_d_40b = df.groupby(['geoitem', 'geolevel', 'period'])['Aantal toevoegingen'].sum().reset_index()
+    df_d_40b['d_40b'] = df_d_40b['Aantal toevoegingen'] - df.groupby(['geoitem', 'geolevel', 'period'])['Aantal onttrekkingen'].sum().reset_index()['Aantal onttrekkingen']
+    df_d_40b = df_d_40b.drop(columns=['Aantal toevoegingen'])
+
+    # 41a: Aandeel gerealiseerde woningen in de betaalbare prijsklasse t.o.v. het totale aantal gerealiseerde woningen.
+    betaalbare_prijsklasse = [
+        'Goedkope sociale huur', 'Betaalbare sociale huur', 'Dure sociale huur', 'Middeldure huur',
+        'Betaalbaar laag koop', 'Betaalbaar midden koop', 'Betaalbaar hoog koop'
+        ]
+    
+    # Maak een nieuwe kolom 'is_betaalbaar' die aangeeft of de woning in een betaalbare prijsklasse valt
+    df['is_betaalbaar'] = df['Prijsklasse'].isin(betaalbare_prijsklasse)
+
+    # df_d_41a berekenen door het aantal toevoegingen in betaalbare prijsklassen te sommeren en dit te delen door het totale aantal toevoegingen (d_40a)
+    df_d_41a = df[df['is_betaalbaar']].groupby(['geoitem', 'geolevel', 'period'])['Aantal toevoegingen'].sum().reset_index()
+    df_d_41a = df_d_41a.rename(columns={'Aantal toevoegingen': 'aantal_betaalbare_woningen'})
+    df_d_41a = df_d_41a.merge(df_d_40a, on=['geoitem', 'geolevel', 'period'])
+
+    # Bereken het aandeel betaalbare woningen ten opzichte van het totale aantal gerealiseerde woningen
+    df_d_41a['d_41a'] = df_d_41a['aantal_betaalbare_woningen'] / df_d_41a['d_40a']
+    df_d_41a = df_d_41a.drop(columns=['aantal_betaalbare_woningen', 'd_40a'])
+    df_d_41a['d_41a'] = df_d_41a['d_41a'] * 100 # Omzetten naar percentage
+    df_d_41a['d_41a'] = df_d_41a['d_41a'].apply(lambda x: f"{x:.1f}".replace('.', ','))
+
+    return df_d_40a, df_d_40b, df_d_41a
+
+
+
+def transformeer_planrealisaties(bron_bestanden: Union[str, List[str]], regio_mapping: dict) -> pd.DataFrame:
+    """
+    Laadt en transformeert planrealisaties data uit één of meerdere bronbestanden.
+
+    Parameters:
+    -----------
+    bron_bestanden (str of list van str): Pad of paden naar de bronbestanden.
+    regio_mapping (dict): Mapping van COROP-namen naar geoitems.
+
+    Returns:
+    --------
+    pd.DataFrame: Getransformeerde planrealisaties data.
+    """
+    # Laad en verwerk de invoerbestanden
+    df_2004_2023 = pd.read_excel(bron_bestanden[0])
+    
+    # Hernoemen van kolommen voor consistentie
+    df = df_2004_2023.rename(columns={
+        'periodcode': 'period',
+        'geolevelcode': 'geolevel',
+        'geoitemcode': 'geoitem'
+    })
+
+    # Selecteer en hernoem de relevante kolommen voor d_40a, d_40b en d_41a
+    df_d_40a = df[df['variablecode'] == 'd_40a'][['geoitem', 'geolevel', 'period', 'value']].rename(columns={'value': 'd_40a'})
+    df_d_40b = df[df['variablecode'] == 'd_40b'][['geoitem', 'geolevel', 'period', 'value']].rename(columns={'value': 'd_40b'})
+    df_d_41a = df[df['variablecode'] == 'd_41a'][['geoitem', 'geolevel', 'period', 'value']].rename(columns={'value': 'd_41a'})
+
+    year = 2024
+    for bestand in bron_bestanden[1:]:
+        temp_df_d_40a, temp_df_d_40b, temp_df_d_41a = transformeer_planrealisaties_juno(bestand, year, regio_mapping)
+        
+        # sorteer op geoitem, period
+        df_d_40a = pd.concat([df_d_40a, temp_df_d_40a], ignore_index=True).sort_values(by=['geoitem', 'period'])
+        df_d_40b = pd.concat([df_d_40b, temp_df_d_40b], ignore_index=True).sort_values(by=['geoitem', 'period'])
+        df_d_41a = pd.concat([df_d_41a, temp_df_d_41a], ignore_index=True).sort_values(by=['geoitem', 'period'])
+
+        year = year + 1
+
+    return df_d_40a, df_d_40b, df_d_41a
+    
+
+
